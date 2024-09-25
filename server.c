@@ -1,12 +1,12 @@
-#include <iostream>
-#include <thread>
-#include <cstring>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include<sys/stat.h>
+#include <sys/stat.h>
 #include <dirent.h>
-
-
+#include <ctype.h>
+#include <pthread.h>
 
 typedef struct {
     int pid;
@@ -19,7 +19,7 @@ typedef struct {
 void get_top_cpu_processes() {
     DIR *proc_dir;
     struct dirent *entry;
-    process_info top[2] = {0};  // Array to hold top 2 processes
+    process_info top[2] = {0};  
 
     proc_dir = opendir("/proc");
     if (proc_dir == NULL) {
@@ -30,13 +30,12 @@ void get_top_cpu_processes() {
     while ((entry = readdir(proc_dir)) != NULL) {
         if (entry->d_type == DT_DIR && isdigit(entry->d_name[0])) {
             char stat_file_path[256];
-            snprintf(stat_file_path, sizeof(stat_file_path),"/proc/%s/stat" , entry->d_name);
-            // printf("%s",stat_file_path);
+            snprintf(stat_file_path, sizeof(stat_file_path), "/proc/%s/stat", entry->d_name);
             FILE *stat_file = fopen(stat_file_path, "r");
             if (stat_file) {
                 process_info proc = {0};
                 long utime, stime;
-                
+
                 fscanf(stat_file, "%d %s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*u %*u %lu %lu",
                        &proc.pid, proc.name, &utime, &stime);
                 fclose(stat_file);
@@ -66,15 +65,19 @@ void get_top_cpu_processes() {
     }
 }
 
-void handle_client(int new_socket) {
+void *handle_client(void *arg) {
+    int new_socket = *(int *)arg;
     char buffer[1024] = {0};
     const char *hello = "Hello from server";
+
     get_top_cpu_processes();
     read(new_socket, buffer, 1024);
-    std::cout << new_socket <<" -> Message received: " << buffer << std::endl;
+    printf("%d -> Message received: %s\n", new_socket, buffer);
     send(new_socket, hello, strlen(hello), 0);
-    std::cout << "Hello message sent" << std::endl;
+    printf("Hello message sent\n");
     close(new_socket);
+    free(arg);  
+    return NULL;
 }
 
 int main() {
@@ -83,7 +86,7 @@ int main() {
     int addrlen = sizeof(address);
 
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        std::cerr << "Socket failed" << std::endl;
+        perror("Socket failed");
         exit(EXIT_FAILURE);
     }
 
@@ -92,23 +95,25 @@ int main() {
     address.sin_port = htons(8005);
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        std::cerr << "Bind failed" << std::endl;
+        perror("Bind failed");
         exit(EXIT_FAILURE);
     }
 
     if (listen(server_fd, 3) < 0) {
-        std::cerr << "Listen failed" << std::endl;
+        perror("Listen failed");
         exit(EXIT_FAILURE);
     }
 
-    while (true) {
-        int new_socket;
-        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-            std::cerr << "Accept failed" << std::endl;
+    while (1) {
+        int *new_socket = malloc(sizeof(int));
+        if ((*new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            perror("Accept failed");
+            free(new_socket);
             exit(EXIT_FAILURE);
         }
-        std::thread t(handle_client, new_socket);
-        t.detach();
+        pthread_t thread_id;
+        pthread_create(&thread_id, NULL, handle_client, new_socket);
+        pthread_detach(thread_id);
     }
 
     close(server_fd);
