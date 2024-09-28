@@ -3,119 +3,106 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <sys/stat.h>
+#include <pthread.h>
+#include <sys/socket.h>
 #include <dirent.h>
 #include <ctype.h>
-#include <pthread.h>
 
-typedef struct {
-    int pid;
-    char name[256];
-    long user_time;
-    long kernel_time;
-    long total_time;
-} process_info;
+#define PORT 8000
+#define BUFFER_SIZE 1024
 
-void get_top_cpu_processes() {
-    DIR *proc_dir;
-    struct dirent *entry;
-    process_info top[2] = {0};  
+typedef struct  {
+    int socket;
+    struct sockaddr_in address;
+}client_t ;
 
-    proc_dir = opendir("/proc");
-    if (proc_dir == NULL) {
-        perror("opendir failed");
-        return;
+int createsocket() {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
     }
+    return sock;
+}
 
-    while ((entry = readdir(proc_dir)) != NULL) {
-        if (entry->d_type == DT_DIR && isdigit(entry->d_name[0])) {
-            char stat_file_path[256];
-            snprintf(stat_file_path, sizeof(stat_file_path), "/proc/%s/stat", entry->d_name);
-            FILE *stat_file = fopen(stat_file_path, "r");
-            if (stat_file) {
-                process_info proc = {0};
-                long utime, stime;
-
-                fscanf(stat_file, "%d %s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*u %*u %lu %lu",
-                       &proc.pid, proc.name, &utime, &stime);
-                fclose(stat_file);
-
-                proc.user_time = utime;
-                proc.kernel_time = stime;
-                proc.total_time = proc.user_time + proc.kernel_time;
-
-                for (int i = 0; i < 2; i++) {
-                    if (proc.total_time > top[i].total_time) {
-                        if (i == 0 && top[1].total_time < proc.total_time) {
-                            top[1] = top[0];
-                        }
-                        top[i] = proc;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    closedir(proc_dir);
-
-    printf("Top %d CPU-consuming processes:\n", 2);
-    for (int i = 0; i < 2; i++) {
-        printf("PID: %d, Name: %s, User Time: %ld, Kernel Time: %ld, Total Time: %ld\n",
-               top[i].pid, top[i].name, top[i].user_time, top[i].kernel_time, top[i].total_time);
+void bindserversocket(int sfd, struct sockaddr_in *address) {
+    if (bind(sfd, (struct sockaddr *)address, sizeof(*address)) < 0) {
+        perror("Binding failed");
+        exit(EXIT_FAILURE);
     }
 }
 
 void *handle_client(void *arg) {
-    int new_socket = *(int *)arg;
-    char buffer[1024] = {0};
-    const char *hello = "Hello from server";
+    client_t *cli = (client_t *)arg;
+    int sock = cli->socket;
+    free(cli);
 
-    get_top_cpu_processes();
-    read(new_socket, buffer, 1024);
-    printf("%d -> Message received: %s\n", new_socket, buffer);
-    send(new_socket, hello, strlen(hello), 0);
-    printf("Hello message sent\n");
-    close(new_socket);
-    free(arg);  
+    char buffer[BUFFER_SIZE];
+    char response[BUFFER_SIZE * 2]; 
+    memset(response, 0, sizeof(response)); 
+    snprintf(response, sizeof(response), "Top two CPU-consuming processes:\n");
+
+    FILE *fp = popen("ps -eo pid,comm,%cpu --sort=-%cpu | head -n 3", "r");
+    if (fp == NULL) {
+        perror("Failed to run command");
+        close(sock);
+        return NULL;
+    }
+
+    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
+        strncat(response, buffer, sizeof(response) - strlen(response) - 1);
+    }
+    pclose(fp);
+    send(sock, response, strlen(response), 0);
+
+    close(sock);
     return NULL;
 }
 
-int main() {
-    int server_fd;
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <number_of_connections>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+    int n = atoi(argv[1]);
+    int sfd = createsocket();
     struct sockaddr_in address;
-    int addrlen = sizeof(address);
-
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        perror("Socket failed");
-        exit(EXIT_FAILURE);
-    }
-
-    address.sin_family = AF_INET;
+    address.sin_family = AF_INET; 
     address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(8005);
-
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("Bind failed");
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(server_fd, 3) < 0) {
+    address.sin_port = htons(PORT);
+    // forefully attaching the port to the server once its closed.
+    // prevents bind failed 
+    int opt  = 1;
+    if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+    perror("setsockopt");
+    exit(EXIT_FAILURE);
+}
+    bindserversocket(sfd, &address);
+    if (listen(sfd, n) < 0) {
         perror("Listen failed");
         exit(EXIT_FAILURE);
     }
+    printf("Server listening on port %d\n", PORT);
 
     while (1) {
-        int *new_socket = malloc(sizeof(int));
-        if ((*new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+        client_t *cli = malloc(sizeof(client_t));
+        socklen_t addr_len = sizeof(cli->address);
+        cli->socket = accept(sfd, (struct sockaddr *)&cli->address, &addr_len);
+        if (cli->socket < 0) {
             perror("Accept failed");
-            free(new_socket);
-            exit(EXIT_FAILURE);
+            free(cli);
+            continue;
         }
-        pthread_t thread_id;
-        pthread_create(&thread_id, NULL, handle_client, new_socket);
-        pthread_detach(thread_id);
+
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, handle_client, cli) != 0) {
+            perror("Thread creation failed");
+            close(cli->socket);
+            free(cli);
+        }
+        pthread_detach(thread); 
     }
 
-    close(server_fd);
+    close(sfd);
     return 0;
 }
