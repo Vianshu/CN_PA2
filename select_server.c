@@ -12,67 +12,39 @@
 #include <dirent.h>
 #include<errno.h>
 
-#define PORT 8005
+#define PORT 8000
 #define MAX_CLIENTS 10
 #define BUFFER_SIZE 1024
 
-typedef struct {
-    int pid;
-    char name[256];
-    long user_time;
-    long kernel_time;
-    long total_time;
-} process_info;
 
-void get_top_cpu_processes(char *output, size_t output_size) {
-    DIR *proc_dir;
-    struct dirent *entry;
-    process_info top[2] = {0};
+typedef struct  {
+    int socket;
+    struct sockaddr_in address;
+}client_t ;
 
-    proc_dir = opendir("/proc");
-    if (proc_dir == NULL) {
-        perror("opendir failed");
-        return;
+
+
+void *handle_client(int sock) {
+    char buffer[BUFFER_SIZE];
+    char response[BUFFER_SIZE * 2]; 
+    memset(response, 0, sizeof(response)); 
+    snprintf(response, sizeof(response), "Top two CPU-consuming processes:\n");
+
+    FILE *fp = popen("ps -eo pid,comm,%cpu --sort=-%cpu | head -n 3", "r");
+    if (fp == NULL) {
+        perror("Failed to run command");
+        close(sock);
+        return NULL;
     }
 
-    while ((entry = readdir(proc_dir)) != NULL) {
-        if (entry->d_type == DT_DIR && isdigit(entry->d_name[0])) {
-            char stat_file_path[256];
-            snprintf(stat_file_path, sizeof(stat_file_path), "/proc/%s/stat", entry->d_name);
-            FILE *stat_file = fopen(stat_file_path, "r");
-            if (stat_file) {
-                process_info proc = {0};
-                long utime, stime;
-
-                fscanf(stat_file, "%d %s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*u %*u %lu %lu",
-                       &proc.pid, proc.name, &utime, &stime);
-                fclose(stat_file);
-
-                proc.user_time = utime;
-                proc.kernel_time = stime;
-                proc.total_time = proc.user_time + proc.kernel_time;
-
-                for (int i = 0; i < 2; i++) {
-                    if (proc.total_time > top[i].total_time) {
-                        if (i == 0 && top[1].total_time < proc.total_time) {
-                            top[1] = top[0];
-                        }
-                        top[i] = proc;
-                        break;
-                    }
-                }
-            }
-        }
+    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
+        strncat(response, buffer, sizeof(response) - strlen(response) - 1);
     }
-    closedir(proc_dir);
+    pclose(fp);
+    send(sock, response, strlen(response), 0);
 
-    // Format the output string with the top processes
-    snprintf(output, output_size,
-             "Top 2 CPU-consuming processes:\n"
-             "PID: %d, Name: %s, User Time: %ld, Kernel Time: %ld, Total Time: %ld\n"
-             "PID: %d, Name: %s, User Time: %ld, Kernel Time: %ld, Total Time: %ld\n",
-             top[0].pid, top[0].name, top[0].user_time, top[0].kernel_time, top[0].total_time,
-             top[1].pid, top[1].name, top[1].user_time, top[1].kernel_time, top[1].total_time);
+    //close(sock);
+    return NULL;
 }
 
 int main() {
@@ -177,15 +149,7 @@ int main() {
                     close(sd);
                     client_sockets[i] = 0; // Remove the socket from the list
                 } else {
-                    // Send top 2 processes to the client
-                    char process_info[512] = {0}; // Buffer to hold the CPU process info
-                    get_top_cpu_processes(process_info, sizeof(process_info));
-
-                    send(sd, process_info, strlen(process_info), 0);
-                    printf("Top processes info sent to client\n");
-
-                    // Remove the client socket after sending the info
-                    close(sd);
+                    handle_client(client_sockets[i]);
                     client_sockets[i] = 0; // Remove the socket from the list
                 }
             }
