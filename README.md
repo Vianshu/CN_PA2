@@ -1,1 +1,1 @@
-- 1.22452 /NodeList/0/DeviceList/0/$ns3::PointToPointNetDevice/TxQueue/Dequeue ns3::PppHeader (Point-to-Point Protocol: IP (0x0021)) ns3::Ipv4Header (tos 0x0 DSCP Default ECN Not-ECT ttl 64 id 11 protocol 6 offset (bytes) 0 flags [none] length: 588 10.1.1.1 > 10.1.2.2) ns3::TcpHeader (49153 > 8080 [ACK] Seq=4825 Ack=1 Win=32768 ns3::TcpOptionTS(1220;1110) ns3::TcpOptionEnd(EOL)) Payload Fragment [444:980]
+
